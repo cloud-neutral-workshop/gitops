@@ -1,81 +1,57 @@
-- name: Set timezone
-  shell: "timedatectl set-timezone Asia/Shanghai"
+---
+# ===== Base system (always) =====
+- name: Base | set timezone
+  ansible.builtin.command: "timedatectl set-timezone Asia/Shanghai"
+  changed_when: false
+  become: true
 
-- name: Render hostname file
+- name: Base | render /etc/hostname
   ansible.builtin.template:
     src: templates/hostname.j2
     dest: /etc/hostname
     owner: root
     group: root
     mode: "0644"
+  become: true
 
-- name: Set hostname using modern module
-  hostname:
+- name: Base | set hostname
+  ansible.builtin.hostname:
     name: "{{ inventory_hostname }}"
+  become: true
 
-- name: Update /etc/hosts
-  template: src=templates/hosts dest=/etc/hosts owner=root group=root mode=0644 force=yes unsafe_writes=yes
+- name: Base | update /etc/hosts
+  ansible.builtin.template:
+    src: templates/hosts
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
 
-- name: Run secure_ssh.sh script
-  script: files/secure_ssh.sh
+- name: Base | harden ssh
+  ansible.builtin.script: files/secure_ssh.sh
+  become: true
 
-- name: "Common | Run on Debian family only"
+# ===== Common baseline (OS split) =====
+- name: Common | Debian family baseline
+  ansible.builtin.import_tasks: common_debian.yml
   when:
     - enable_common | bool
-    - ansible_facts.os_family == 'Debian'
-  vars:
-    apt_repo_config: "{{ repo.apt | default({}) }}"
-    apt_package_config: "{{ packages.apt | default({}) }}"
-  block:
-    - name: "Common | Repo & keys"
-      ansible.builtin.include_tasks: repo_setup.yml
-      when: apt_repo_config.enabled | default(false) | bool
-      vars:
-        repo_config: "{{ apt_repo_config }}"
-      tags: [repo, baseline]
+    - ansible_facts.os_family == "Debian"
 
-    - name: "Common | Packages"
-      ansible.builtin.include_tasks: packages.yml
-      when: apt_package_config.enabled | default(false) | bool
-      vars:
-        package_config: "{{ apt_package_config }}"
-        package_manager: apt
-      tags: [pkgs, baseline]
-
-    - name: "Common | S3FS 挂载"
-      ansible.builtin.include_tasks: configure_s3fs.yml
-      when: s3fs_enable | default(false) | bool
-      vars:
-        s3fs_config: "{{ s3fs_config | default({}) }}"
-      tags: [s3fs, mount]
-
-- name: "Common | Run on RedHat family only"
+- name: Common | RedHat family baseline
+  ansible.builtin.import_tasks: common_redhat.yml
   when:
     - enable_common | bool
-    - ansible_facts.os_family == 'RedHat'
-  vars:
-    yum_package_config: "{{ packages.yum | default({}) }}"
-  block:
-    - name: "Common | Packages"
-      ansible.builtin.include_tasks: packages.yml
-      when: yum_package_config.enabled | default(false) | bool
-      vars:
-        package_config: "{{ yum_package_config }}"
-        package_manager: dnf
-      tags: [pkgs, baseline]
+    - ansible_facts.os_family == "RedHat"
 
-#- name: Include GPU Configuration
-#  include_tasks: include_gpu.yaml
-#  when: (ansible_facts['distribution'] == "Ubuntu") or (ansible_facts['distribution'] == "Debian")
-#  tags: 
-#    - k3s
-#    - gpu
-#    - nvidia
+# ===== Add-ons (default OFF) =====
+- name: Addon | S3FS mount
+  ansible.builtin.import_tasks: addons/s3fs.yml
+  when: s3fs_enable | default(false) | bool
+  tags: [s3fs, mount]
 
-#- name: enable ip_forward
-#  shell: 'echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf; echo "net.ipv4.conf.all.proxy_arp = 1" >> /etc/sysctl.conf ; sysctl -p /etc/sysctl.conf'
-
-
-#- name: Install packages
-#  shell: "yum makecache && yum install -y audit container-selinux"
-#  when: (ansible_facts['distribution'] != "Ubuntu") or (ansible_facts['distribution'] != "Debian")
+- name: Addon | GPU configuration
+  ansible.builtin.import_tasks: addons/gpu.yml
+  when: gpu_enable | default(false) | bool
+  tags: [gpu, nvidia]
