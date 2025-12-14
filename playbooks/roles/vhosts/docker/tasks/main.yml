@@ -43,6 +43,10 @@
         url: https://download.docker.com/linux/ubuntu/gpg
         dest: /etc/apt/keyrings/docker.asc
         mode: '0644'
+      register: docker_gpg_download
+      until: docker_gpg_download is succeeded
+      retries: 5
+      delay: 3
 
     - name: Add Docker repository
       ansible.builtin.apt_repository:
