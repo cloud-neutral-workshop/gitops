@@ -1,8 +1,19 @@
 ---
+- name: Normalize apt repo config
+  ansible.builtin.set_fact:
+    apt_repo_config: "{{ {
+      'key_dir': '/etc/apt/keyrings',
+      'enable_universe': false,
+      'auto_update_cache': true,
+      'keyrings': [],
+      'legacy_paths': [],
+      'entries': []
+    } | combine(repo_config | default({}), recursive=True) }}"
+
 # 0) 统一 keyring 路径
 - name: Ensure keyring dir exists
   ansible.builtin.file:
-    path: "{{ apt_key_dir }}"
+    path: "{{ apt_repo_config.key_dir }}"
     state: directory
     owner: root
     group: root
@@ -20,14 +31,14 @@
 # 0.2) 声明式 keyring 管理
 - name: "Manage declared apt keyrings"
   ansible.builtin.include_tasks: manage_keyring.yml
-  when: (apt_keyrings | default([])) | length > 0
-  loop: "{{ apt_keyrings | default([]) }}"
+  when: (apt_repo_config.keyrings | default([])) | length > 0
+  loop: "{{ apt_repo_config.keyrings | default([]) }}"
   loop_control:
     loop_var: apt_keyring
     label: "{{ apt_keyring.name | default(apt_keyring.dest | default('custom-keyring')) }}"
   vars:
-    keyring_dest: "{{ apt_keyring.dest | default(apt_key_dir ~ '/' ~ apt_keyring.name ~ '.gpg') }}"
-    keyring_ascii: "{{ apt_keyring.asc_path | default(apt_key_dir ~ '/' ~ apt_keyring.name ~ '.asc') }}"
+    keyring_dest: "{{ apt_keyring.dest | default(apt_repo_config.key_dir ~ '/' ~ apt_keyring.name ~ '.gpg') }}"
+    keyring_ascii: "{{ apt_keyring.asc_path | default(apt_repo_config.key_dir ~ '/' ~ apt_keyring.name ~ '.asc') }}"
     keyring_state: "{{ apt_keyring.state | default('present') }}"
   tags: [repo, baseline]
 
@@ -36,7 +47,7 @@
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
-  loop: "{{ apt_repo_legacy | default([]) }}"
+  loop: "{{ apt_repo_config.legacy_paths | default([]) }}"
   become: true
 
 # 2) Ubuntu 可选 universe
@@ -47,17 +58,17 @@
     filename: "ubuntu-{{ ansible_distribution_release }}-universe"
   when:
     - ansible_facts.distribution == 'Ubuntu'
-    - enable_universe | bool
+    - apt_repo_config.enable_universe | default(false) | bool
   become: true
 
 # 3) 每个仓库：下载 key（可选）→ dearmor（可选）→ 添加 .list（含 signed-by）
 - name: "Fetch ASCII key (if key_url provided)"
   ansible.builtin.get_url:
     url: "{{ repo.key_url }}"
-    dest: "{{ apt_key_dir }}/{{ repo.name }}.asc"
+    dest: "{{ apt_repo_config.key_dir }}/{{ repo.name }}.asc"
     mode: '0644'
   when: repo.key_url is defined and repo.key_url | length > 0
-  loop: "{{ repos | default([]) }}"
+  loop: "{{ apt_repo_config.entries | default([]) }}"
   loop_control:
     loop_var: repo
     label: "{{ repo.name }}"
@@ -65,10 +76,10 @@
 
 - name: "Dearmor key"
   ansible.builtin.command:
-    cmd: "gpg --dearmor -o {{ apt_key_dir }}/{{ repo.name }}.gpg {{ apt_key_dir }}/{{ repo.name }}.asc"
-    creates: "{{ apt_key_dir }}/{{ repo.name }}.gpg"
+    cmd: "gpg --dearmor -o {{ apt_repo_config.key_dir }}/{{ repo.name }}.gpg {{ apt_repo_config.key_dir }}/{{ repo.name }}.asc"
+    creates: "{{ apt_repo_config.key_dir }}/{{ repo.name }}.gpg"
   when: repo.key_url is defined and repo.key_url | length > 0
-  loop: "{{ repos | default([]) }}"
+  loop: "{{ apt_repo_config.entries | default([]) }}"
   loop_control:
     loop_var: repo
     label: "{{ repo.name }}"
@@ -76,13 +87,13 @@
 
 - name: "Ensure keyring permission"
   ansible.builtin.file:
-    path: "{{ (repo.signed_by | default(apt_key_dir ~ '/' ~ repo.name ~ '.gpg')) }}"
+    path: "{{ (repo.signed_by | default(apt_repo_config.key_dir ~ '/' ~ repo.name ~ '.gpg')) }}"
     owner: root
     group: root
     mode: '0644'
     state: file
   when: (repo.key_url is defined and repo.key_url | length > 0) or (repo.signed_by is defined)
-  loop: "{{ repos | default([]) }}"
+  loop: "{{ apt_repo_config.entries | default([]) }}"
   loop_control:
     loop_var: repo
     label: "{{ repo.name }}"
@@ -91,7 +102,7 @@
 - name: "Cleanup repo specific paths"
   when: repo.cleanup is defined and (repo.cleanup | length > 0)
   become: true
-  loop: "{{ repos | default([]) }}"
+  loop: "{{ apt_repo_config.entries | default([]) }}"
   loop_control:
     loop_var: repo
     label: "{{ repo.name }}"
@@ -107,12 +118,12 @@
 - name: "Add classic .list repo with signed-by"
   ansible.builtin.apt_repository:
     repo: >-
-      deb [signed-by={{ repo.signed_by | default(apt_key_dir ~ '/' ~ repo.name ~ '.gpg') }}]
+      deb [signed-by={{ repo.signed_by | default(apt_repo_config.key_dir ~ '/' ~ repo.name ~ '.gpg') }}]
       {{ repo.uri }} {{ repo.suite }} {{ (repo.components | default(['main'])) | join(' ') }}
     filename: "{{ repo.name }}"
     state: "{{ (repo.enabled | default(false) | bool) | ternary('present','absent') }}"
   when: repo.enabled | default(false) | bool
-  loop: "{{ repos | default([]) }}"
+  loop: "{{ apt_repo_config.entries | default([]) }}"
   loop_control:
     loop_var: repo
     label: "{{ repo.name }}"
@@ -122,5 +133,5 @@
 - name: Update apt cache after repo setup
   ansible.builtin.apt:
     update_cache: true
-  when: auto_update_cache | bool
+  when: apt_repo_config.auto_update_cache | default(false) | bool
   become: true

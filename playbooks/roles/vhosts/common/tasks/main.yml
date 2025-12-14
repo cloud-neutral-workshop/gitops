@@ -23,21 +23,46 @@
   when:
     - enable_common | bool
     - ansible_facts.os_family == 'Debian'
+  vars:
+    apt_repo_config: "{{ repo.apt | default({}) }}"
+    apt_package_config: "{{ packages.apt | default({}) }}"
   block:
     - name: "Common | Repo & keys"
       ansible.builtin.include_tasks: repo_setup.yml
-      when: repo_setup | bool
+      when: apt_repo_config.enabled | default(false) | bool
+      vars:
+        repo_config: "{{ apt_repo_config }}"
       tags: [repo, baseline]
 
     - name: "Common | Packages"
       ansible.builtin.include_tasks: packages.yml
-      when: install_packages | bool
+      when: apt_package_config.enabled | default(false) | bool
+      vars:
+        package_config: "{{ apt_package_config }}"
+        package_manager: apt
       tags: [pkgs, baseline]
 
     - name: "Common | S3FS 挂载"
       ansible.builtin.include_tasks: configure_s3fs.yml
-      when: s3fs_enable | bool
+      when: s3fs_enable | default(false) | bool
+      vars:
+        s3fs_config: "{{ s3fs_config | default({}) }}"
       tags: [s3fs, mount]
+
+- name: "Common | Run on RedHat family only"
+  when:
+    - enable_common | bool
+    - ansible_facts.os_family == 'RedHat'
+  vars:
+    yum_package_config: "{{ packages.yum | default({}) }}"
+  block:
+    - name: "Common | Packages"
+      ansible.builtin.include_tasks: packages.yml
+      when: yum_package_config.enabled | default(false) | bool
+      vars:
+        package_config: "{{ yum_package_config }}"
+        package_manager: dnf
+      tags: [pkgs, baseline]
 
 #- name: Include GPU Configuration
 #  include_tasks: include_gpu.yaml
